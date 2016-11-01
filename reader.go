@@ -19,7 +19,7 @@ func readEntry(buf []byte) (*RegFileEntry, []byte, error) {
 	return entry, buf[(4 + len):], nil
 }
 
-func readEntries(fname string) ([](*RegFileEntry), error) {
+func ReadEntries(fname string) ([](*RegFileEntry), error) {
 	imgFile, err := ioutil.ReadFile(fname)
 	if err != nil {
 		return nil, err

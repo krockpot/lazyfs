@@ -9,6 +9,9 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
+	"os/signal"
+	"path"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -61,5 +64,31 @@ func main() {
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
+
+	entries, err := ReadEntries(path.Join(flag.Arg(1), "reg-files.img"))
+	if err != nil {
+		log.Fatalf("Image read fail: %v\n", err)
+	}
+
+	for _, e := range entries {
+		if *e.Flags != 0 {
+			log.Println(e)
+		}
+	}
+
+	// Catch SIGINT and exit cleanly.
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for {
+			sig := <-c
+			log.Println("Recieved", sig.String(), "-- unmounting")
+			err := server.Unmount()
+			if err != nil {
+				log.Println("Error while unmounting: %v", err)
+			}
+		}
+	}()
+
 	server.Serve()
 }
