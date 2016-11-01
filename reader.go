@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io/ioutil"
 
 	"github.com/golang/protobuf/proto"
@@ -20,10 +19,10 @@ func readEntry(buf []byte) (*RegFileEntry, []byte, error) {
 	return entry, buf[(4 + len):], nil
 }
 
-func readEntries(fname string) [](*RegFileEntry) {
+func readEntries(fname string) ([](*RegFileEntry), error) {
 	imgFile, err := ioutil.ReadFile(fname)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	newbuf := imgFile[8:]
@@ -32,15 +31,9 @@ func readEntries(fname string) [](*RegFileEntry) {
 		var tmp *RegFileEntry
 		tmp, newbuf, err = readEntry(newbuf)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		entries = append(entries, tmp)
 	}
-	return entries
-}
-
-func main() {
-	for _, e := range readEntries("./test.img") {
-		fmt.Println(e)
-	}
+	return entries, nil
 }
