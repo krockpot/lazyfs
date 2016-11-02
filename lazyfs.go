@@ -22,6 +22,8 @@ import (
 
 type LazyFs struct {
 	pathfs.FileSystem
+	FdMap   map[uint32]*pb.FdinfoEntry
+	FileMap map[uint32]*pb.RegFileEntry
 }
 
 func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
@@ -40,7 +42,10 @@ func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 
 func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	if name == "" {
-		c = []fuse.DirEntry{{Name: "file.txt", Mode: fuse.S_IFREG}}
+		c = []fuse.DirEntry{}
+		for _, f := range me.FileMap {
+			c = append(c, fuse.DirEntry{Name: path.Base(*f.Name), Mode: fuse.S_IFREG})
+		}
 		return c, fuse.OK
 	}
 	return nil, fuse.ENOENT
@@ -61,24 +66,6 @@ func main() {
 	if len(flag.Args()) < 2 {
 		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR")
 	}
-	nfs := pathfs.NewPathNodeFs(&LazyFs{FileSystem: pathfs.NewDefaultFileSystem()}, nil)
-	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
-	if err != nil {
-		log.Fatalf("Mount fail: %v\n", err)
-	}
-
-	// Grab the regular files and parse into a map
-	regFileMap := map[uint32]*pb.RegFileEntry{}
-	imgRegFiles := RegFileImg{path.Join(flag.Arg(1), "reg-files.img")}
-	entries, err := imgRegFiles.ReadEntries()
-	if err != nil {
-		log.Fatalf("Image read fail: %v\n", err)
-	}
-	for _, e := range entries {
-		if *e.Flags != 0 {
-			regFileMap[*e.Id] = e
-		}
-	}
 
 	// Grab all the files in the image directory
 	files, err := ioutil.ReadDir(flag.Arg(1))
@@ -87,6 +74,7 @@ func main() {
 	}
 
 	// Iterate over image files, grab fdinfo and parse into a map
+	// Only keep the OPEN, REGULAR, file descriptors
 	fdInfoMap := map[uint32]*pb.FdinfoEntry{}
 	for _, f := range files {
 		if (len(f.Name()) > len("fdinfo")) &&
@@ -97,14 +85,36 @@ func main() {
 				log.Fatalf("Image read fail: %v\n", err)
 			}
 			for _, e := range fdEntries {
-				fdInfoMap[*e.Id] = e
+				if *e.Type == pb.FdTypes_REG {
+					fdInfoMap[*e.Id] = e
+				}
 			}
 		}
 	}
 
-	// TODO Print Testing
-	log.Println(regFileMap)
-	log.Println(fdInfoMap)
+	// Grab the regular files and parse into a map
+	regFileMap := map[uint32]*pb.RegFileEntry{}
+	imgRegFiles := RegFileImg{path.Join(flag.Arg(1), "reg-files.img")}
+	entries, err := imgRegFiles.ReadEntries()
+	if err != nil {
+		log.Fatalf("Image read fail: %v\n", err)
+	}
+	for _, e := range entries {
+		if fdInfoMap[*e.Id] != nil {
+			regFileMap[*e.Id] = e
+		}
+	}
+
+	// Setup fuse mount
+	nfs := pathfs.NewPathNodeFs(&LazyFs{
+		FileSystem: pathfs.NewDefaultFileSystem(),
+		FdMap:      fdInfoMap,
+		FileMap:    regFileMap,
+	}, nil)
+	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
+	if err != nil {
+		log.Fatalf("Mount fail: %v\n", err)
+	}
 
 	// Catch SIGINT and exit cleanly.
 	c := make(chan os.Signal, 1)
