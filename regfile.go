@@ -11,11 +11,11 @@ type RegFile struct {
 	RemoteEntry *protobuf.RegFileEntry
 }
 
-func FileExists(l []RegFile, f string) bool {
+func GetFile(l []RegFile, f string) RegFile {
 	for _, entry := range l {
 		if entry.LocalName == f {
-			return true
+			return entry
 		}
 	}
-	return false
+	return RegFile{}
 }

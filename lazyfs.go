@@ -8,12 +8,12 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
 	"path"
-	"strings"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -32,9 +32,10 @@ type LazyFs struct {
 }
 
 func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
-	if FileExists(me.Files, name) {
+	f := GetFile(me.Files, name)
+	if f != (RegFile{}) {
 		return &fuse.Attr{
-			Mode: fuse.S_IFREG | 0644, Size: uint64(len(name)),
+			Mode: *(*f.RemoteEntry).Mode, Size: *(*f.RemoteEntry).Size,
 		}, fuse.OK
 	} else if name == "" {
 		return &fuse.Attr{
@@ -110,10 +111,14 @@ func main() {
 		if fdMap[*e.Id] != nil {
 			remoteFiles = append(remoteFiles, RegFile{
 				Fd:          *fdMap[*e.Id].Fd,
-				LocalName:   strings.Replace((*e.Name)[1:], "/", ".", -1),
+				LocalName:   "remote_open_file_" + fmt.Sprint(*fdMap[*e.Id].Fd),
 				RemoteEntry: e,
 			})
 		}
+	}
+
+	for _, e := range remoteFiles {
+		log.Println(e)
 	}
 
 	// Setup fuse mount
