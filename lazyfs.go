@@ -8,6 +8,7 @@ package main
 
 import (
 	"flag"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
@@ -16,13 +17,14 @@ import (
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"github.com/hanwen/go-fuse/fuse/pathfs"
+	pb "github.com/jakrach/lazyfs/protobuf"
 )
 
-type HelloFs struct {
+type LazyFs struct {
 	pathfs.FileSystem
 }
 
-func (me *HelloFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
+func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
 	switch name {
 	case "file.txt":
 		return &fuse.Attr{
@@ -36,7 +38,7 @@ func (me *HelloFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse
 	return nil, fuse.ENOENT
 }
 
-func (me *HelloFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
+func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	if name == "" {
 		c = []fuse.DirEntry{{Name: "file.txt", Mode: fuse.S_IFREG}}
 		return c, fuse.OK
@@ -44,7 +46,7 @@ func (me *HelloFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntr
 	return nil, fuse.ENOENT
 }
 
-func (me *HelloFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
+func (me *LazyFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
 	if name != "file.txt" {
 		return nil, fuse.ENOENT
 	}
@@ -57,24 +59,52 @@ func (me *HelloFs) Open(name string, flags uint32, context *fuse.Context) (file 
 func main() {
 	flag.Parse()
 	if len(flag.Args()) < 2 {
-		log.Fatal("Usage:\n  hello MOUNTPOINT IMGDIR")
+		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR")
 	}
-	nfs := pathfs.NewPathNodeFs(&HelloFs{FileSystem: pathfs.NewDefaultFileSystem()}, nil)
+	nfs := pathfs.NewPathNodeFs(&LazyFs{FileSystem: pathfs.NewDefaultFileSystem()}, nil)
 	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
 	if err != nil {
 		log.Fatalf("Mount fail: %v\n", err)
 	}
 
-	entries, err := ReadEntries(path.Join(flag.Arg(1), "reg-files.img"))
+	// Grab the regular files and parse into a map
+	regFileMap := map[uint32]*pb.RegFileEntry{}
+	imgRegFiles := RegFileImg{path.Join(flag.Arg(1), "reg-files.img")}
+	entries, err := imgRegFiles.ReadEntries()
 	if err != nil {
 		log.Fatalf("Image read fail: %v\n", err)
 	}
-
 	for _, e := range entries {
 		if *e.Flags != 0 {
-			log.Println(e)
+			regFileMap[*e.Id] = e
 		}
 	}
+
+	// Grab all the files in the image directory
+	files, err := ioutil.ReadDir(flag.Arg(1))
+	if err != nil {
+		log.Fatalf("ReadDir fail: %v=\n", err)
+	}
+
+	// Iterate over image files, grab fdinfo and parse into a map
+	fdInfoMap := map[uint32]*pb.FdinfoEntry{}
+	for _, f := range files {
+		if (len(f.Name()) > len("fdinfo")) &&
+			(f.Name()[:len("fdinfo")] == "fdinfo") {
+			imgFdinfo := FdinfoImg{path.Join(flag.Arg(1), f.Name())}
+			fdEntries, err := imgFdinfo.ReadEntries()
+			if err != nil {
+				log.Fatalf("Image read fail: %v\n", err)
+			}
+			for _, e := range fdEntries {
+				fdInfoMap[*e.Id] = e
+			}
+		}
+	}
+
+	// TODO Print Testing
+	log.Println(regFileMap)
+	log.Println(fdInfoMap)
 
 	// Catch SIGINT and exit cleanly.
 	c := make(chan os.Signal, 1)
