@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -29,6 +30,8 @@ const (
 type LazyFs struct {
 	pathfs.FileSystem
 	Files []RegFile
+	RHost string
+	RPort string
 }
 
 func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
@@ -69,9 +72,13 @@ func (me *LazyFs) Open(name string, flags uint32, context *fuse.Context) (file n
 
 func main() {
 	flag.Parse()
-	if len(flag.Args()) < 2 {
-		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR")
+	if len(flag.Args()) < 3 {
+		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR RHOST:PORT")
 	}
+
+	arr := strings.Split(flag.Arg(2), ":")
+	remoteHost := arr[0]
+	remotePort := arr[1]
 
 	// Grab all the files in the image directory
 	files, err := ioutil.ReadDir(flag.Arg(1))
@@ -119,12 +126,18 @@ func main() {
 
 	for _, e := range remoteFiles {
 		log.Println(e)
+		err := e.FetchRemote(remoteHost, remotePort)
+		if err != nil {
+			log.Fatalf("Fetch failed: %v\n", err)
+		}
 	}
 
 	// Setup fuse mount
 	nfs := pathfs.NewPathNodeFs(&LazyFs{
 		FileSystem: pathfs.NewDefaultFileSystem(),
 		Files:      remoteFiles,
+		RHost:      remoteHost,
+		RPort:      remotePort,
 	}, nil)
 	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
 	if err != nil {
