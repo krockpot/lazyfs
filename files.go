@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 type LazyFile struct {
 	Fd        uint32
 	LocalName string
-	Cached    bool
 	PB        *protobuf.RegFileEntry
+	cached    bool
 	inner     nodefs.File
+	remote    string
 }
 
 func GetFile(l []*LazyFile, f string) *LazyFile {
@@ -28,9 +30,9 @@ func GetFile(l []*LazyFile, f string) *LazyFile {
 	return &LazyFile{}
 }
 
-func (f *LazyFile) fetchRemote(user, rhost string) error {
-	fname := f.PB.Name
-	cmd := exec.Command("scp", user+"@"+rhost+":"+*fname, *fname)
+func (f *LazyFile) fetchRemote() error {
+	fname := *f.PB.Name
+	cmd := exec.Command("scp", f.remote+":"+fname, fname)
 	fmt.Println(cmd)
 	err := cmd.Run()
 	if err != nil {
@@ -39,19 +41,20 @@ func (f *LazyFile) fetchRemote(user, rhost string) error {
 	return nil
 }
 
-func NewLazyFile(fd uint32, e *protobuf.RegFileEntry) *LazyFile {
+func NewLazyFile(fd uint32, e *protobuf.RegFileEntry, remote string) *LazyFile {
 	return &LazyFile{
 		Fd:        fd,
 		LocalName: "remote_open_file_" + fmt.Sprint(fd),
-		Cached:    false,
 		PB:        e,
+		cached:    false,
 		inner:     nil,
+		remote:    remote,
 	}
 }
 
 func (f *LazyFile) String() string {
 	str := "fd #%d placeholder at %s for remote file %s"
-	if f.Cached {
+	if f.cached {
 		str = "fd #%d cached at %s for remote file %s"
 	}
 	return fmt.Sprintf(str, f.Fd, f.LocalName, *f.PB.Name)
@@ -64,52 +67,103 @@ func (f *LazyFile) InnerFile() nodefs.File {
 }
 
 func (f *LazyFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
-	/*
-		if !f.Cached {
-			f.Cached = true
+	if !f.cached {
+		err := f.fetchRemote()
+		if err != nil {
+			// TODO choose proper error code
+			return nil, fuse.ENOENT
 		}
-		return f.inner.Read(dest, off)
-	*/
-	return nil, fuse.ENOSYS
+		fp, err := os.Open(*f.PB.Name)
+		if err != nil {
+			// TODO choose proper error code
+			return nil, fuse.ENOENT
+		}
+		f.inner = nodefs.NewLoopbackFile(fp)
+		f.cached = true
+	}
+	return f.inner.Read(dest, off)
 }
 
 func (f *LazyFile) Write(data []byte, off int64) (written uint32, code fuse.Status) {
-	return 0, fuse.ENOSYS
+	if !f.cached {
+		err := f.fetchRemote()
+		if err != nil {
+			// TODO choose proper error code
+			return 0, fuse.EBADF
+		}
+		fp, err := os.Open(*f.PB.Name)
+		if err != nil {
+			// TODO choose proper error code
+			return 0, fuse.EBADF
+		}
+		f.inner = nodefs.NewLoopbackFile(fp)
+		f.cached = true
+	}
+	return f.inner.Write(data, off)
 }
 
 func (f *LazyFile) Flush() fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Flush()
 }
 
 func (f *LazyFile) Release() {
+	return // Need this here for some reason
+	if !f.cached {
+		return
+	}
+	f.inner.Release()
 }
 
 func (f *LazyFile) Fsync(flags int) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Fsync(flags)
 }
 
 func (f *LazyFile) Truncate(size uint64) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Truncate(size)
 }
 
 func (f *LazyFile) GetAttr(out *fuse.Attr) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.ENOENT
+	}
+	return f.inner.GetAttr(out)
 }
 
 func (f *LazyFile) Chown(uid uint32, gid uint32) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Chown(uid, gid)
 }
 
 func (f *LazyFile) Chmod(perms uint32) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Chmod(perms)
 }
 
 func (f *LazyFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Utimens(atime, mtime)
 }
 
 func (f *LazyFile) Allocate(off uint64, size uint64, mode uint32) fuse.Status {
-	return fuse.ENOSYS
+	if !f.cached {
+		return fuse.OK
+	}
+	return f.inner.Allocate(off, size, mode)
 }
 
 func (f *LazyFile) SetInode(inode *nodefs.Inode) {

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"strings"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -25,8 +24,6 @@ const (
 type LazyFs struct {
 	pathfs.FileSystem
 	Files []*LazyFile
-	RHost string
-	User  string
 }
 
 // GetAttr returns file attributes for any regular file opened by the
@@ -35,7 +32,7 @@ func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 	f := GetFile(me.Files, name)
 	if *f != (LazyFile{}) {
 		return &fuse.Attr{
-			Mode: *(*f.PB).Mode, Size: *(*f.PB).Size,
+			Mode: *f.PB.Mode, Size: *f.PB.Size,
 		}, fuse.OK
 	} else if name == "" {
 		return &fuse.Attr{
@@ -51,7 +48,7 @@ func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry
 	if name == "" {
 		c = []fuse.DirEntry{}
 		for _, f := range me.Files {
-			c = append(c, fuse.DirEntry{Name: f.LocalName, Mode: fuse.S_IFREG})
+			c = append(c, fuse.DirEntry{Name: f.LocalName, Mode: *f.PB.Mode})
 		}
 		return c, fuse.OK
 	}
@@ -74,15 +71,6 @@ func main() {
 	flag.Parse()
 	if len(flag.Args()) != 3 {
 		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR USER@RHOST")
-	}
-
-	arr := strings.Split(flag.Arg(2), "@")
-	user, remoteHost := "", ""
-	if len(arr) > 1 {
-		user = arr[0]
-		remoteHost = arr[1]
-	} else {
-		remoteHost = arr[0]
 	}
 
 	// Grab all the files in the image directory
@@ -121,7 +109,8 @@ func main() {
 	for _, e := range entries {
 		// Only store entries that are in our fd map
 		if fdMap[*e.Id] != nil {
-			remoteFiles = append(remoteFiles, NewLazyFile(*fdMap[*e.Id].Fd, e))
+			remoteFiles = append(remoteFiles, NewLazyFile(*fdMap[*e.Id].Fd, e,
+				flag.Arg(2)))
 		}
 	}
 
@@ -134,8 +123,6 @@ func main() {
 	nfs := pathfs.NewPathNodeFs(&LazyFs{
 		FileSystem: pathfs.NewDefaultFileSystem(),
 		Files:      remoteFiles,
-		RHost:      remoteHost,
-		User:       user,
 	}, nil)
 	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
 	if err != nil {
