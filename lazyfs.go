@@ -1,9 +1,3 @@
-// Copyright 2016 the Go-FUSE Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
-// A Go mirror of libfuse's hello.c
-
 package main
 
 import (
@@ -22,18 +16,22 @@ import (
 	pb "github.com/jakrach/lazyfs/protobuf"
 )
 
+// Patterns for matching CRIU image files.
 const (
 	FDINFO_PATTERN  string = "fdinfo"
 	REGFILE_PATTERN string = "reg-files.img"
 )
 
+// LazyFs represents a filesystem that migrates files lazily on read/write.
 type LazyFs struct {
 	pathfs.FileSystem
 	Files []RegFile
 	RHost string
-	RPort string
+	User  string
 }
 
+// GetAttr returns file attributes for any regular file opened by the
+// checkpointed process.
 func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
 	f := GetFile(me.Files, name)
 	if f != (RegFile{}) {
@@ -49,6 +47,7 @@ func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 	}
 }
 
+// OpenDir builds a directory listing from each checkpointed open file.
 func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	if name == "" {
 		c = []fuse.DirEntry{}
@@ -60,25 +59,32 @@ func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry
 	return nil, fuse.ENOENT
 }
 
+// Open returns the lazy file which will fetch on reads/writes.
 func (me *LazyFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
-	if name != "file.txt" {
+	f := GetFile(me.Files, name)
+	if f != (RegFile{}) {
+		return &f, fuse.OK
+	} else {
 		return nil, fuse.ENOENT
 	}
-	if flags&fuse.O_ANYWRITE != 0 {
-		return nil, fuse.EPERM
-	}
-	return nodefs.NewDataFile([]byte(name)), fuse.OK
 }
 
+// main parses user input and CRIU image files, registers the remote host, and
+// mounts the filesystem.
 func main() {
 	flag.Parse()
-	if len(flag.Args()) < 3 {
-		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR RHOST:PORT")
+	if len(flag.Args()) != 3 {
+		log.Fatal("Usage:\n  lazyfs MOUNTPOINT IMGDIR USER@RHOST")
 	}
 
-	arr := strings.Split(flag.Arg(2), ":")
-	remoteHost := arr[0]
-	remotePort := arr[1]
+	arr := strings.Split(flag.Arg(2), "@")
+	user, remoteHost := "", ""
+	if len(arr) > 1 {
+		user = arr[0]
+		remoteHost = arr[1]
+	} else {
+		remoteHost = arr[0]
+	}
 
 	// Grab all the files in the image directory
 	files, err := ioutil.ReadDir(flag.Arg(1))
@@ -116,20 +122,25 @@ func main() {
 	for _, e := range entries {
 		// Only store entries that are in our fd map
 		if fdMap[*e.Id] != nil {
+			// TODO remove temporary testing for loopback
+			f, err := os.Open(*e.Name)
+			if err != nil {
+				log.Fatalf("Open failed %v\n", err)
+			}
 			remoteFiles = append(remoteFiles, RegFile{
-				Fd:          *fdMap[*e.Id].Fd,
-				LocalName:   "remote_open_file_" + fmt.Sprint(*fdMap[*e.Id].Fd),
+				Fd:        *fdMap[*e.Id].Fd,
+				LocalName: "remote_open_file_" + fmt.Sprint(*fdMap[*e.Id].Fd),
+				// TODO cached should be false and inner set to nil
+				Cached:      true,
+				Inner:       nodefs.NewLoopbackFile(f),
 				RemoteEntry: e,
 			})
 		}
 	}
 
+	// TODO remove debugging entry printing
 	for _, e := range remoteFiles {
 		log.Println(e)
-		err := e.FetchRemote(remoteHost, remotePort)
-		if err != nil {
-			log.Fatalf("Fetch failed: %v\n", err)
-		}
 	}
 
 	// Setup fuse mount
@@ -137,7 +148,7 @@ func main() {
 		FileSystem: pathfs.NewDefaultFileSystem(),
 		Files:      remoteFiles,
 		RHost:      remoteHost,
-		RPort:      remotePort,
+		User:       user,
 	}, nil)
 	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
 	if err != nil {
