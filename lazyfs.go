@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -25,7 +24,7 @@ const (
 // LazyFs represents a filesystem that migrates files lazily on read/write.
 type LazyFs struct {
 	pathfs.FileSystem
-	Files []RegFile
+	Files []*LazyFile
 	RHost string
 	User  string
 }
@@ -34,9 +33,9 @@ type LazyFs struct {
 // checkpointed process.
 func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
 	f := GetFile(me.Files, name)
-	if f != (RegFile{}) {
+	if *f != (LazyFile{}) {
 		return &fuse.Attr{
-			Mode: *(*f.RemoteEntry).Mode, Size: *(*f.RemoteEntry).Size,
+			Mode: *(*f.PB).Mode, Size: *(*f.PB).Size,
 		}, fuse.OK
 	} else if name == "" {
 		return &fuse.Attr{
@@ -62,8 +61,8 @@ func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry
 // Open returns the lazy file which will fetch on reads/writes.
 func (me *LazyFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
 	f := GetFile(me.Files, name)
-	if f != (RegFile{}) {
-		return &f, fuse.OK
+	if *f != (LazyFile{}) {
+		return f, fuse.OK
 	} else {
 		return nil, fuse.ENOENT
 	}
@@ -113,7 +112,7 @@ func main() {
 	}
 
 	// Grab the regular files and parse into a list
-	remoteFiles := []RegFile{}
+	remoteFiles := []*LazyFile{}
 	entries, err := RegFileImg{path.Join(flag.Arg(1),
 		REGFILE_PATTERN)}.ReadEntries()
 	if err != nil {
@@ -122,19 +121,7 @@ func main() {
 	for _, e := range entries {
 		// Only store entries that are in our fd map
 		if fdMap[*e.Id] != nil {
-			// TODO remove temporary testing for loopback
-			f, err := os.Open(*e.Name)
-			if err != nil {
-				log.Fatalf("Open failed %v\n", err)
-			}
-			remoteFiles = append(remoteFiles, RegFile{
-				Fd:        *fdMap[*e.Id].Fd,
-				LocalName: "remote_open_file_" + fmt.Sprint(*fdMap[*e.Id].Fd),
-				// TODO cached should be false and inner set to nil
-				Cached:      true,
-				Inner:       nodefs.NewLoopbackFile(f),
-				RemoteEntry: e,
-			})
+			remoteFiles = append(remoteFiles, NewLazyFile(*fdMap[*e.Id].Fd, e))
 		}
 	}
 
