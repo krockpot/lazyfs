@@ -59,6 +59,7 @@ func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry
 func (me *LazyFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
 	f := GetFile(me.Files, name)
 	if *f != (LazyFile{}) {
+		return NewWrapFile(f.LocalName, f.PB.GetFlags()), fuse.OK
 		return f, fuse.OK
 	} else {
 		return nil, fuse.ENOENT

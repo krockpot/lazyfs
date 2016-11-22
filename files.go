@@ -4,12 +4,158 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
 	"github.com/jakrach/lazyfs/protobuf"
 )
+
+type Wrap struct {
+	File   *os.File
+	cached bool
+	name   string
+	flags  uint32
+	lock   sync.Mutex
+}
+
+func NewWrapFile(nm string, flags uint32) nodefs.File {
+	return &Wrap{
+		File:   nil,
+		cached: false,
+		name:   nm,
+		flags:  flags}
+}
+
+func (f *Wrap) String() string {
+	return "wrap"
+}
+
+func (f *Wrap) InnerFile() nodefs.File {
+	return nil
+}
+func (f *Wrap) SetInode(inode *nodefs.Inode) {
+	// Do nothing
+}
+
+func (f *Wrap) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
+	var err error
+	fmt.Println("reading")
+	if !f.cached {
+		f.File, err = os.OpenFile("/mirror/"+f.name, int(f.flags), 0)
+		if err != nil {
+			return nil, fuse.ToStatus(err)
+		}
+		f.cached = true
+	}
+	f.lock.Lock()
+	r := fuse.ReadResultFd(f.File.Fd(), off, len(dest))
+	f.lock.Unlock()
+	return r, fuse.OK
+}
+func (f *Wrap) Write(data []byte, off int64) (written uint32, code fuse.Status) {
+	var err error
+	if !f.cached {
+		f.File, err = os.OpenFile("/mirror/"+f.name, int(f.flags), 0)
+		if err != nil {
+			return 0, fuse.ToStatus(err)
+		}
+		f.cached = true
+	}
+	f.lock.Lock()
+	n, err := f.File.WriteAt(data, off)
+	f.lock.Unlock()
+	return uint32(n), fuse.ToStatus(err)
+}
+
+func (f *Wrap) Flush() fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		newFd, err := syscall.Dup(int(f.File.Fd()))
+		f.lock.Unlock()
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
+		err = syscall.Close(newFd)
+		return fuse.ToStatus(err)
+	}
+	return fuse.OK
+}
+
+func (f *Wrap) Release() {
+	if f.cached {
+		f.lock.Lock()
+		f.File.Close()
+		f.lock.Unlock()
+	}
+}
+func (f *Wrap) Fsync(flags int) fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(syscall.Fsync(int(f.File.Fd())))
+		f.lock.Unlock()
+		return r
+	}
+	return fuse.OK
+}
+func (f *Wrap) Truncate(size uint64) fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(syscall.Ftruncate(int(f.File.Fd()), int64(size)))
+		f.lock.Unlock()
+		return r
+	}
+	return fuse.OK
+}
+func (f *Wrap) GetAttr(out *fuse.Attr) fuse.Status {
+	if f.cached {
+		st := syscall.Stat_t{}
+		f.lock.Lock()
+		err := syscall.Fstat(int(f.File.Fd()), &st)
+		f.lock.Unlock()
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
+		out.FromStat(&st)
+	}
+	return fuse.OK
+}
+func (f *Wrap) Chown(uid uint32, gid uint32) fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(f.File.Chown(int(uid), int(gid)))
+		f.lock.Unlock()
+		return r
+	}
+	return fuse.OK
+}
+func (f *Wrap) Chmod(perms uint32) fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(f.File.Chmod(os.FileMode(perms)))
+		f.lock.Unlock()
+		return r
+	}
+	return fuse.OK
+}
+func (f *Wrap) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
+	// unimplemented
+	return fuse.OK
+}
+func (f *Wrap) Allocate(off uint64, size uint64, mode uint32) fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		err := syscall.Fallocate(int(f.File.Fd()), mode, int64(off), int64(size))
+		f.lock.Unlock()
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
+	}
+	return fuse.OK
+}
 
 // Regfile represents a checkpointed open file
 type LazyFile struct {
@@ -38,13 +184,19 @@ func (f *LazyFile) fetchRemote() error {
 	if err != nil {
 		return err
 	}
+	fd, err := os.Open(fname)
+	if err != nil {
+		return err
+	}
+	fd.Chmod(os.FileMode(*f.PB.Mode))
+	fd.Close()
 	return nil
 }
 
 func NewLazyFile(fd uint32, e *protobuf.RegFileEntry, remote string) *LazyFile {
 	return &LazyFile{
 		Fd:        fd,
-		LocalName: "remote_open_file_" + fmt.Sprint(fd),
+		LocalName: strings.Replace((*e.Name)[1:], "/", ".", -1),
 		PB:        e,
 		cached:    false,
 		inner:     nil,
@@ -73,7 +225,7 @@ func (f *LazyFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 			// TODO choose proper error code
 			return nil, fuse.ENOENT
 		}
-		fp, err := os.Open(*f.PB.Name)
+		fp, err := os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()), os.FileMode(f.PB.GetMode()))
 		if err != nil {
 			// TODO choose proper error code
 			return nil, fuse.ENOENT
@@ -91,7 +243,7 @@ func (f *LazyFile) Write(data []byte, off int64) (written uint32, code fuse.Stat
 			// TODO choose proper error code
 			return 0, fuse.EBADF
 		}
-		fp, err := os.Open(*f.PB.Name)
+		fp, err := os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()), os.FileMode(f.PB.GetMode()))
 		if err != nil {
 			// TODO choose proper error code
 			return 0, fuse.EBADF
