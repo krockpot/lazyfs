@@ -14,157 +14,15 @@ import (
 	"github.com/jakrach/lazyfs/protobuf"
 )
 
-type Wrap struct {
-	File   *os.File
-	cached bool
-	name   string
-	flags  uint32
-	lock   sync.Mutex
-}
-
-func NewWrapFile(nm string, flags uint32) nodefs.File {
-	return &Wrap{
-		File:   nil,
-		cached: false,
-		name:   nm,
-		flags:  flags}
-}
-
-func (f *Wrap) String() string {
-	return "wrap"
-}
-
-func (f *Wrap) InnerFile() nodefs.File {
-	return nil
-}
-func (f *Wrap) SetInode(inode *nodefs.Inode) {
-	// Do nothing
-}
-
-func (f *Wrap) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
-	var err error
-	fmt.Println("reading")
-	if !f.cached {
-		f.File, err = os.OpenFile("/mirror/"+f.name, int(f.flags), 0)
-		if err != nil {
-			return nil, fuse.ToStatus(err)
-		}
-		f.cached = true
-	}
-	f.lock.Lock()
-	r := fuse.ReadResultFd(f.File.Fd(), off, len(dest))
-	f.lock.Unlock()
-	return r, fuse.OK
-}
-func (f *Wrap) Write(data []byte, off int64) (written uint32, code fuse.Status) {
-	var err error
-	if !f.cached {
-		f.File, err = os.OpenFile("/mirror/"+f.name, int(f.flags), 0)
-		if err != nil {
-			return 0, fuse.ToStatus(err)
-		}
-		f.cached = true
-	}
-	f.lock.Lock()
-	n, err := f.File.WriteAt(data, off)
-	f.lock.Unlock()
-	return uint32(n), fuse.ToStatus(err)
-}
-
-func (f *Wrap) Flush() fuse.Status {
-	if f.cached {
-		f.lock.Lock()
-		newFd, err := syscall.Dup(int(f.File.Fd()))
-		f.lock.Unlock()
-		if err != nil {
-			return fuse.ToStatus(err)
-		}
-		err = syscall.Close(newFd)
-		return fuse.ToStatus(err)
-	}
-	return fuse.OK
-}
-
-func (f *Wrap) Release() {
-	if f.cached {
-		f.lock.Lock()
-		f.File.Close()
-		f.lock.Unlock()
-	}
-}
-func (f *Wrap) Fsync(flags int) fuse.Status {
-	if f.cached {
-		f.lock.Lock()
-		r := fuse.ToStatus(syscall.Fsync(int(f.File.Fd())))
-		f.lock.Unlock()
-		return r
-	}
-	return fuse.OK
-}
-func (f *Wrap) Truncate(size uint64) fuse.Status {
-	if f.cached {
-		f.lock.Lock()
-		r := fuse.ToStatus(syscall.Ftruncate(int(f.File.Fd()), int64(size)))
-		f.lock.Unlock()
-		return r
-	}
-	return fuse.OK
-}
-func (f *Wrap) GetAttr(out *fuse.Attr) fuse.Status {
-	if f.cached {
-		st := syscall.Stat_t{}
-		f.lock.Lock()
-		err := syscall.Fstat(int(f.File.Fd()), &st)
-		f.lock.Unlock()
-		if err != nil {
-			return fuse.ToStatus(err)
-		}
-		out.FromStat(&st)
-	}
-	return fuse.OK
-}
-func (f *Wrap) Chown(uid uint32, gid uint32) fuse.Status {
-	if f.cached {
-		f.lock.Lock()
-		r := fuse.ToStatus(f.File.Chown(int(uid), int(gid)))
-		f.lock.Unlock()
-		return r
-	}
-	return fuse.OK
-}
-func (f *Wrap) Chmod(perms uint32) fuse.Status {
-	if f.cached {
-		f.lock.Lock()
-		r := fuse.ToStatus(f.File.Chmod(os.FileMode(perms)))
-		f.lock.Unlock()
-		return r
-	}
-	return fuse.OK
-}
-func (f *Wrap) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
-	// unimplemented
-	return fuse.OK
-}
-func (f *Wrap) Allocate(off uint64, size uint64, mode uint32) fuse.Status {
-	if f.cached {
-		f.lock.Lock()
-		err := syscall.Fallocate(int(f.File.Fd()), mode, int64(off), int64(size))
-		f.lock.Unlock()
-		if err != nil {
-			return fuse.ToStatus(err)
-		}
-	}
-	return fuse.OK
-}
-
 // Regfile represents a checkpointed open file
 type LazyFile struct {
 	Fd        uint32
 	LocalName string
 	PB        *protobuf.RegFileEntry
 	cached    bool
-	inner     nodefs.File
 	remote    string
+	inner     *os.File
+	lock      sync.Mutex
 }
 
 func GetFile(l []*LazyFile, f string) *LazyFile {
@@ -212,112 +70,141 @@ func (f *LazyFile) String() string {
 	return fmt.Sprintf(str, f.Fd, f.LocalName, *f.PB.Name)
 }
 
-// InnerFile returns the loopback file held by the lazy file.
-// If not cached, this field will be nil.
-func (f *LazyFile) InnerFile() nodefs.File {
-	return f.inner
-}
-
 func (f *LazyFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 	if !f.cached {
 		err := f.fetchRemote()
 		if err != nil {
-			// TODO choose proper error code
-			return nil, fuse.ENOENT
+			return nil, fuse.ToStatus(err)
 		}
-		fp, err := os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()), os.FileMode(f.PB.GetMode()))
+		f.inner, err = os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()),
+			os.FileMode(f.PB.GetMode()))
 		if err != nil {
-			// TODO choose proper error code
-			return nil, fuse.ENOENT
+			return nil, fuse.ToStatus(err)
 		}
-		f.inner = nodefs.NewLoopbackFile(fp)
 		f.cached = true
 	}
-	return f.inner.Read(dest, off)
+	f.lock.Lock()
+	r := fuse.ReadResultFd(f.inner.Fd(), off, len(dest))
+	f.lock.Unlock()
+	return r, fuse.OK
 }
 
 func (f *LazyFile) Write(data []byte, off int64) (written uint32, code fuse.Status) {
 	if !f.cached {
 		err := f.fetchRemote()
 		if err != nil {
-			// TODO choose proper error code
-			return 0, fuse.EBADF
+			return 0, fuse.ToStatus(err)
 		}
-		fp, err := os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()), os.FileMode(f.PB.GetMode()))
+		f.inner, err = os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()),
+			os.FileMode(f.PB.GetMode()))
 		if err != nil {
-			// TODO choose proper error code
-			return 0, fuse.EBADF
+			return 0, fuse.ToStatus(err)
 		}
-		f.inner = nodefs.NewLoopbackFile(fp)
 		f.cached = true
 	}
-	return f.inner.Write(data, off)
+	f.lock.Lock()
+	n, err := f.inner.WriteAt(data, off)
+	f.lock.Unlock()
+	return uint32(n), fuse.ToStatus(err)
 }
 
 func (f *LazyFile) Flush() fuse.Status {
-	if !f.cached {
-		return fuse.OK
+	if f.cached {
+		f.lock.Lock()
+		newFd, err := syscall.Dup(int(f.inner.Fd()))
+		f.lock.Unlock()
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
+		err = syscall.Close(newFd)
+		return fuse.ToStatus(err)
 	}
-	return f.inner.Flush()
+	return fuse.OK
 }
 
 func (f *LazyFile) Release() {
-	return // Need this here for some reason
-	if !f.cached {
-		return
+	if f.cached {
+		f.lock.Lock()
+		f.inner.Close()
+		f.lock.Unlock()
 	}
-	f.inner.Release()
 }
 
 func (f *LazyFile) Fsync(flags int) fuse.Status {
-	if !f.cached {
-		return fuse.OK
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(syscall.Fsync(int(f.inner.Fd())))
+		f.lock.Unlock()
+		return r
 	}
-	return f.inner.Fsync(flags)
+	return fuse.OK
 }
 
 func (f *LazyFile) Truncate(size uint64) fuse.Status {
-	if !f.cached {
-		return fuse.OK
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(syscall.Ftruncate(int(f.inner.Fd()), int64(size)))
+		f.lock.Unlock()
+		return r
 	}
-	return f.inner.Truncate(size)
+	return fuse.OK
 }
 
 func (f *LazyFile) GetAttr(out *fuse.Attr) fuse.Status {
-	if !f.cached {
-		return fuse.ENOENT
+	if f.cached {
+		st := syscall.Stat_t{}
+		f.lock.Lock()
+		err := syscall.Fstat(int(f.inner.Fd()), &st)
+		f.lock.Unlock()
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
+		out.FromStat(&st)
 	}
-	return f.inner.GetAttr(out)
+	return fuse.OK
 }
 
 func (f *LazyFile) Chown(uid uint32, gid uint32) fuse.Status {
-	if !f.cached {
-		return fuse.OK
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(f.inner.Chown(int(uid), int(gid)))
+		f.lock.Unlock()
+		return r
 	}
-	return f.inner.Chown(uid, gid)
+	return fuse.OK
 }
 
 func (f *LazyFile) Chmod(perms uint32) fuse.Status {
-	if !f.cached {
-		return fuse.OK
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(f.inner.Chmod(os.FileMode(perms)))
+		f.lock.Unlock()
+		return r
 	}
-	return f.inner.Chmod(perms)
-}
-
-func (f *LazyFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
-	if !f.cached {
-		return fuse.OK
-	}
-	return f.inner.Utimens(atime, mtime)
+	return fuse.OK
 }
 
 func (f *LazyFile) Allocate(off uint64, size uint64, mode uint32) fuse.Status {
-	if !f.cached {
-		return fuse.OK
+	if f.cached {
+		f.lock.Lock()
+		err := syscall.Fallocate(int(f.inner.Fd()), mode, int64(off),
+			int64(size))
+		f.lock.Unlock()
+		if err != nil {
+			return fuse.ToStatus(err)
+		}
 	}
-	return f.inner.Allocate(off, size, mode)
+	return fuse.OK
 }
 
+func (f *LazyFile) InnerFile() nodefs.File {
+	// unimplemented
+	return nil
+}
+func (f *LazyFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
+	// unimplemented
+	return fuse.OK
+}
 func (f *LazyFile) SetInode(inode *nodefs.Inode) {
 	// Do nothing
 }
