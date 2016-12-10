@@ -1,4 +1,4 @@
-## LazyFS (Lazy Filesystem)
+# LazyFS (Lazy Filesystem)
 
 LazyFS is a tool built on top of [CRIU](https://criu.org/Main_Page) to assist
 process migration between hosts. LazyFS specifically addresses the issue of
@@ -13,6 +13,24 @@ LazyFS is implemented in Go as a [FUSE](https://en.wikipedia.org/wiki/Filesystem
 LazyFS relies on SCP currently to transfer images from the original host to the
 new (post-migration) host. For migration to run smoothly, it is recommended that
 you setup SSH keys between the hosts before migration.
+
+## Installation
+
+Install Go and all [dependencies for CRIU](https://criu.org/Installation).
+
+Clone my [custom version of CRIU](https://github.com/jakrach/criu) and continue
+with installation steps from link above. This version simply has a hook on
+restoration that checks if a file already exists locally: if it does not, it
+instead opens /lazyfs/(original filename with '.' replacing '/').
+
+Clone LazyFS and compile the CRIU protobuf scheme into Go. In the root
+for this project run `protoc --go_out=. protobuf/regfile.proto`.
+
+Finally, from the root of this project, run `go install`.
+
+## Usage
+
+## Demos
 
 ### A video demo of LazyFS using read
 
