@@ -9,7 +9,7 @@ chooses to find the middleground and instead requests only the files it needs
 from the original host at the time of a read or write access by the migrated
 process.
 
-LazyFS is implemented in GO as a [FUSE](https://en.wikipedia.org/wiki/Filesystem_in_Userspace) interface.
+LazyFS is implemented in Go as a [FUSE](https://en.wikipedia.org/wiki/Filesystem_in_Userspace) interface.
 LazyFS relies on SCP currently to transfer images from the original host to the
 new (post-migration) host. For migration to run smoothly, it is recommended that
 you setup SSH keys between the hosts before migration.
