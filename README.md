@@ -15,6 +15,8 @@ new (post-migration) host. For migration to run smoothly, it is recommended that
 you setup SSH keys between the hosts before migration.
 
 ## Installation
+Note: You only need to install my version of CRIU and LazyFS on the host you are migrating TO,
+you may use the standard CRIU and do not need LazyFS at all on the host you are migrating FROM.
 
 Install Go and all [dependencies for CRIU](https://criu.org/Installation).
 
@@ -28,7 +30,22 @@ for this project run `protoc --go_out=. protobuf/regfile.proto`.
 
 Finally, from the root of this project, run `go install`.
 
+As mentioned above, you may want to configure your migration machines to have
+one another's SSH keys so that LazyFS can simply SCP files.
+
 ## Usage
+
+To checkpoint a process, run the following, which will output '.img' files in the current directory:
+`sudo criu dump -j -t <pid>`
+
+To start LazyFS:
+`sudo /path/to/bin/lazyfs MOUNTPOINT IMGDIR USER@RHOST`
+mountpoint - for compatibility with CRIU, use /lazyfs (as it expects that location).
+imgdir - location of all the '.img' files from CRIU's checkpointing process.
+user@rhost - the username and the remote host that you are migrating FROM.
+
+To restore a process, run the following in the directory containing the '.img' files:
+`sudo criu restore -d -j`
 
 ## Demos
 
