@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -17,30 +17,18 @@ import (
 // LazyFile represents a placeholder for a checkpointed file, potentially with
 // a local copy to operate on.
 type LazyFile struct {
-	Fd        uint32
-	LocalName string
-	PB        *protobuf.RegFileEntry
-	cached    bool
-	remote    string
-	inner     *os.File
-	lock      sync.Mutex
-}
-
-// GetFile finds the file with name f in slice l.
-func GetFile(l []*LazyFile, f string) *LazyFile {
-	for _, entry := range l {
-		if entry.LocalName == f {
-			return entry
-		}
-	}
-	return &LazyFile{}
+	e      *protobuf.RegFileEntry
+	cached bool
+	remote string
+	inner  *os.File
+	lock   sync.Mutex
 }
 
 // fetchRemote SCP's the source file from the saved remote host.
 func (f *LazyFile) fetchRemote() error {
-	fname := f.PB.GetName()
+	fname := f.e.GetName()
 	cmd := exec.Command("scp", f.remote+":"+fname, fname)
-	fmt.Println(cmd)
+	log.Println(cmd)
 	err := cmd.Run()
 	if err != nil {
 		return err
@@ -49,30 +37,28 @@ func (f *LazyFile) fetchRemote() error {
 	if err != nil {
 		return err
 	}
-	fd.Chmod(os.FileMode(f.PB.GetMode()))
+	fd.Chmod(os.FileMode(f.e.GetMode()))
 	fd.Close()
 	return nil
 }
 
 // NewLazyFile creates a new lazy file structure.
-func NewLazyFile(fd uint32, e *protobuf.RegFileEntry, remote string) *LazyFile {
+func NewLazyFile(e *protobuf.RegFileEntry, remote string) *LazyFile {
 	return &LazyFile{
-		Fd:        fd,
-		LocalName: strings.Replace((*e.Name)[1:], "/", ".", -1),
-		PB:        e,
-		cached:    false,
-		inner:     nil,
-		remote:    remote,
+		e:      e,
+		cached: false,
+		inner:  nil,
+		remote: remote,
 	}
 }
 
 // String prints the local and original filename, as well as if it is cached.
 func (f *LazyFile) String() string {
-	str := "PLACEHOLDER: (%s) -> %s"
+	str := "PLACEHOLDER: %s"
 	if f.cached {
-		str = "CACHED: (%s) -> %s"
+		str = "CACHED: %s"
 	}
-	return fmt.Sprintf(str, f.LocalName, f.PB.GetName())
+	return fmt.Sprintf(str, f.e.GetName())
 }
 
 // Read fetches the remote file if it is not cached locally. Reads from the
@@ -83,8 +69,8 @@ func (f *LazyFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 		if err != nil {
 			return nil, fuse.ToStatus(err)
 		}
-		f.inner, err = os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()),
-			os.FileMode(f.PB.GetMode()))
+		f.inner, err = os.OpenFile(f.e.GetName(), int(f.e.GetFlags()),
+			os.FileMode(f.e.GetMode()))
 		if err != nil {
 			return nil, fuse.ToStatus(err)
 		}
@@ -104,8 +90,8 @@ func (f *LazyFile) Write(data []byte, off int64) (written uint32, code fuse.Stat
 		if err != nil {
 			return 0, fuse.ToStatus(err)
 		}
-		f.inner, err = os.OpenFile(f.PB.GetName(), int(f.PB.GetFlags()),
-			os.FileMode(f.PB.GetMode()))
+		f.inner, err = os.OpenFile(f.e.GetName(), int(f.e.GetFlags()),
+			os.FileMode(f.e.GetMode()))
 		if err != nil {
 			return 0, fuse.ToStatus(err)
 		}

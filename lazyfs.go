@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -23,16 +24,17 @@ const (
 // LazyFs represents a filesystem that migrates files lazily on read/write.
 type LazyFs struct {
 	pathfs.FileSystem
-	Files []*LazyFile
+	FileMap    map[string]*pb.RegFileEntry
+	RemoteInfo string
 }
 
 // GetAttr returns file attributes for any regular file opened by the
 // checkpointed process.
 func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
-	f := GetFile(me.Files, name)
-	if *f != (LazyFile{}) {
+	f := me.FileMap[name]
+	if f != nil {
 		return &fuse.Attr{
-			Mode: f.PB.GetMode(), Size: f.PB.GetSize(),
+			Mode: f.GetMode(), Size: f.GetSize(),
 		}, fuse.OK
 	} else if name == "" {
 		return &fuse.Attr{
@@ -46,8 +48,9 @@ func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 // OpenDir builds a directory listing from each checkpointed open file.
 func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	if name == "" {
-		for _, f := range me.Files {
-			c = append(c, fuse.DirEntry{Name: f.LocalName, Mode: f.PB.GetMode()})
+		c = []fuse.DirEntry{}
+		for name, e := range me.FileMap {
+			c = append(c, fuse.DirEntry{Name: name, Mode: e.GetMode()})
 		}
 		return c, fuse.OK
 	}
@@ -56,9 +59,9 @@ func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry
 
 // Open returns the lazy file which will fetch on reads/writes.
 func (me *LazyFs) Open(name string, flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
-	f := GetFile(me.Files, name)
-	if *f != (LazyFile{}) {
-		return f, fuse.OK
+	f := me.FileMap[name]
+	if f != nil {
+		return NewLazyFile(f, me.RemoteInfo), fuse.OK
 	} else {
 		return nil, fuse.ENOENT
 	}
@@ -79,7 +82,7 @@ func main() {
 	}
 
 	// Iterate over image files, grab fdinfo and parse into a map
-	fdMap := map[uint32]*pb.FdinfoEntry{}
+	fdMap := map[uint32]bool{}
 	for _, f := range files {
 		// If we found a fdinfo-XX.img, parse that file
 		if (len(f.Name()) > len(FDINFO_PATTERN)) &&
@@ -92,14 +95,14 @@ func main() {
 			for _, e := range fdEntries {
 				// Only keep the regular open file descriptors
 				if *e.Type == pb.FdTypes_REG {
-					fdMap[*e.Id] = e
+					fdMap[*e.Id] = true
 				}
 			}
 		}
 	}
 
 	// Grab the regular files and parse into a list
-	remoteFiles := []*LazyFile{}
+	remoteFiles := map[string]*pb.RegFileEntry{}
 	entries, err := RegFileImg{path.Join(flag.Arg(1),
 		REGFILE_PATTERN)}.ReadEntries()
 	if err != nil {
@@ -107,21 +110,22 @@ func main() {
 	}
 	for _, e := range entries {
 		// Only store entries that are in our fd map
-		if fdMap[*e.Id] != nil {
-			remoteFiles = append(remoteFiles, NewLazyFile(*fdMap[*e.Id].Fd, e,
-				flag.Arg(2)))
+		if fdMap[*e.Id] {
+			local := strings.Replace((e.GetName()), "/", ".", -1)[1:]
+			remoteFiles[local] = e
 		}
 	}
 
 	// Log the retrieved files from the checkpointed process
-	for _, e := range remoteFiles {
-		log.Println(e)
+	for name, e := range remoteFiles {
+		log.Printf("Placeholder %s saved with: %v\n", name, e)
 	}
 
 	// Setup fuse mount
 	nfs := pathfs.NewPathNodeFs(&LazyFs{
 		FileSystem: pathfs.NewDefaultFileSystem(),
-		Files:      remoteFiles,
+		FileMap:    remoteFiles,
+		RemoteInfo: flag.Arg(2),
 	}, nil)
 	server, _, err := nodefs.MountRoot(flag.Arg(0), nfs.Root(), nil)
 	if err != nil {
