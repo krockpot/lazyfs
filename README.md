@@ -36,15 +36,21 @@ one another's SSH keys so that LazyFS can simply SCP files.
 ## Usage
 
 To checkpoint a process, run the following, which will output '.img' files in the current directory:
+
 `sudo criu dump -j -t <pid>`
 
 To start LazyFS:
+
 `sudo /path/to/bin/lazyfs MOUNTPOINT IMGDIR USER@RHOST`
+
 mountpoint - for compatibility with CRIU, use /lazyfs (as it expects that location).
+
 imgdir - location of all the '.img' files from CRIU's checkpointing process.
+
 user@rhost - the username and the remote host that you are migrating FROM.
 
 To restore a process, run the following in the directory containing the '.img' files:
+
 `sudo criu restore -d -j`
 
 ## Demos
