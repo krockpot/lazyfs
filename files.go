@@ -14,7 +14,8 @@ import (
 	"github.com/jakrach/lazyfs/protobuf"
 )
 
-// Regfile represents a checkpointed open file
+// LazyFile represents a placeholder for a checkpointed file, potentially with
+// a local copy to operate on.
 type LazyFile struct {
 	Fd        uint32
 	LocalName string
@@ -25,6 +26,7 @@ type LazyFile struct {
 	lock      sync.Mutex
 }
 
+// GetFile finds the file with name f in slice l.
 func GetFile(l []*LazyFile, f string) *LazyFile {
 	for _, entry := range l {
 		if entry.LocalName == f {
@@ -34,8 +36,9 @@ func GetFile(l []*LazyFile, f string) *LazyFile {
 	return &LazyFile{}
 }
 
+// fetchRemote SCP's the source file from the saved remote host.
 func (f *LazyFile) fetchRemote() error {
-	fname := *f.PB.Name
+	fname := f.PB.GetName()
 	cmd := exec.Command("scp", f.remote+":"+fname, fname)
 	fmt.Println(cmd)
 	err := cmd.Run()
@@ -46,11 +49,12 @@ func (f *LazyFile) fetchRemote() error {
 	if err != nil {
 		return err
 	}
-	fd.Chmod(os.FileMode(*f.PB.Mode))
+	fd.Chmod(os.FileMode(f.PB.GetMode()))
 	fd.Close()
 	return nil
 }
 
+// NewLazyFile creates a new lazy file structure.
 func NewLazyFile(fd uint32, e *protobuf.RegFileEntry, remote string) *LazyFile {
 	return &LazyFile{
 		Fd:        fd,
@@ -62,14 +66,17 @@ func NewLazyFile(fd uint32, e *protobuf.RegFileEntry, remote string) *LazyFile {
 	}
 }
 
+// String prints the local and original filename, as well as if it is cached.
 func (f *LazyFile) String() string {
-	str := "fd #%d placeholder at %s for remote file %s"
+	str := "PLACEHOLDER: (%s) -> %s"
 	if f.cached {
-		str = "fd #%d cached at %s for remote file %s"
+		str = "CACHED: (%s) -> %s"
 	}
-	return fmt.Sprintf(str, f.Fd, f.LocalName, *f.PB.Name)
+	return fmt.Sprintf(str, f.LocalName, f.PB.GetName())
 }
 
+// Read fetches the remote file if it is not cached locally. Reads from the
+// local copy of the file.
 func (f *LazyFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 	if !f.cached {
 		err := f.fetchRemote()
@@ -89,6 +96,8 @@ func (f *LazyFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status) {
 	return r, fuse.OK
 }
 
+// Write fetches the remote file if it is not cached locally. Writes to the
+// local copy of the file.
 func (f *LazyFile) Write(data []byte, off int64) (written uint32, code fuse.Status) {
 	if !f.cached {
 		err := f.fetchRemote()
@@ -108,6 +117,8 @@ func (f *LazyFile) Write(data []byte, off int64) (written uint32, code fuse.Stat
 	return uint32(n), fuse.ToStatus(err)
 }
 
+// Flush if cached, flushes the local file. Otherwise, always does nothing
+// and returns OK.
 func (f *LazyFile) Flush() fuse.Status {
 	if f.cached {
 		f.lock.Lock()
@@ -122,6 +133,7 @@ func (f *LazyFile) Flush() fuse.Status {
 	return fuse.OK
 }
 
+// Release if cached, closes the local file. Otherwise, does nothing.
 func (f *LazyFile) Release() {
 	if f.cached {
 		f.lock.Lock()
@@ -130,6 +142,8 @@ func (f *LazyFile) Release() {
 	}
 }
 
+// Fsync if cached, syncs the local file as normal. Otherwise, always does
+// nothing and returns OK.
 func (f *LazyFile) Fsync(flags int) fuse.Status {
 	if f.cached {
 		f.lock.Lock()
@@ -140,6 +154,8 @@ func (f *LazyFile) Fsync(flags int) fuse.Status {
 	return fuse.OK
 }
 
+// Truncate if cached, truncates the local file as normal. Otherwise, always
+// does nothing and returns OK.
 func (f *LazyFile) Truncate(size uint64) fuse.Status {
 	if f.cached {
 		f.lock.Lock()
@@ -150,6 +166,8 @@ func (f *LazyFile) Truncate(size uint64) fuse.Status {
 	return fuse.OK
 }
 
+// GetAttr if cached, gets the attributes for the local file as normal.
+// Otherwise, always does nothing and returns OK.
 func (f *LazyFile) GetAttr(out *fuse.Attr) fuse.Status {
 	if f.cached {
 		st := syscall.Stat_t{}
@@ -164,6 +182,8 @@ func (f *LazyFile) GetAttr(out *fuse.Attr) fuse.Status {
 	return fuse.OK
 }
 
+// Chown if cached, calls chown on the local file. Otherwise, always does
+// nothing and returns OK.
 func (f *LazyFile) Chown(uid uint32, gid uint32) fuse.Status {
 	if f.cached {
 		f.lock.Lock()
@@ -174,6 +194,8 @@ func (f *LazyFile) Chown(uid uint32, gid uint32) fuse.Status {
 	return fuse.OK
 }
 
+// Chmod if cached, calls chmod on the local file. Otherwise, always does
+// nothing and returns OK.
 func (f *LazyFile) Chmod(perms uint32) fuse.Status {
 	if f.cached {
 		f.lock.Lock()
@@ -184,6 +206,8 @@ func (f *LazyFile) Chmod(perms uint32) fuse.Status {
 	return fuse.OK
 }
 
+// Allocate if cached, calls allocate on the local file. Otherwise, always does
+// nothing and returns OK.
 func (f *LazyFile) Allocate(off uint64, size uint64, mode uint32) fuse.Status {
 	if f.cached {
 		f.lock.Lock()
@@ -197,14 +221,13 @@ func (f *LazyFile) Allocate(off uint64, size uint64, mode uint32) fuse.Status {
 	return fuse.OK
 }
 
-func (f *LazyFile) InnerFile() nodefs.File {
-	// unimplemented
-	return nil
-}
+// InnerFile lazy files do not implement this function.
+func (f *LazyFile) InnerFile() nodefs.File { return nil }
+
+// Utimens lazy files do not implement this function.
 func (f *LazyFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
-	// unimplemented
 	return fuse.OK
 }
-func (f *LazyFile) SetInode(inode *nodefs.Inode) {
-	// Do nothing
-}
+
+// SetInode lazy files do not implement this function.
+func (f *LazyFile) SetInode(inode *nodefs.Inode) {}

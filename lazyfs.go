@@ -32,7 +32,7 @@ func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 	f := GetFile(me.Files, name)
 	if *f != (LazyFile{}) {
 		return &fuse.Attr{
-			Mode: *f.PB.Mode, Size: *f.PB.Size,
+			Mode: f.PB.GetMode(), Size: f.PB.GetSize(),
 		}, fuse.OK
 	} else if name == "" {
 		return &fuse.Attr{
@@ -46,9 +46,8 @@ func (me *LazyFs) GetAttr(name string, context *fuse.Context) (*fuse.Attr, fuse.
 // OpenDir builds a directory listing from each checkpointed open file.
 func (me *LazyFs) OpenDir(name string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	if name == "" {
-		c = []fuse.DirEntry{}
 		for _, f := range me.Files {
-			c = append(c, fuse.DirEntry{Name: f.LocalName, Mode: *f.PB.Mode})
+			c = append(c, fuse.DirEntry{Name: f.LocalName, Mode: f.PB.GetMode()})
 		}
 		return c, fuse.OK
 	}
@@ -114,7 +113,7 @@ func main() {
 		}
 	}
 
-	// TODO remove debugging entry printing
+	// Log the retrieved files from the checkpointed process
 	for _, e := range remoteFiles {
 		log.Println(e)
 	}
