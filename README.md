@@ -16,8 +16,8 @@ you setup SSH keys between the hosts before migration.
 
 ### A video demo of LazyFS using read
 
-[![Read Demo](https://img.youtube.com/vi/5fqaI-HCDDI)](https://youtu.be/5fqaI-HCDDI)
+[![Read Demo](https://img.youtube.com/vi/5fqaI-HCDDI/0.jpg)](https://youtu.be/5fqaI-HCDDI)
 
 ### A video demo of LazyFS using write
 
-[![Write Demo](https://img.youtube.com/vi/kQdNOy8ENX7/0.jpg)](https://youtu.be/kQdNOy8ENX8)
+[![Write Demo](https://img.youtube.com/vi/kQdNOy8ENX8/0.jpg)](https://youtu.be/kQdNOy8ENX8)
