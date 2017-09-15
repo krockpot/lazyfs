@@ -215,5 +215,17 @@ func (f *LazyFile) Utimens(atime *time.Time, mtime *time.Time) fuse.Status {
 	return fuse.OK
 }
 
+// Flock if cached, calls flock on the file. Otherwise, always does nothing
+// and returns OK.
+func (f *LazyFile) Flock(flags int) fuse.Status {
+	if f.cached {
+		f.lock.Lock()
+		r := fuse.ToStatus(syscall.Flock(int(f.inner.Fd()), flags))
+		f.lock.Unlock()
+		return r
+	}
+	return fuse.OK
+}
+
 // SetInode lazy files do not implement this function.
 func (f *LazyFile) SetInode(inode *nodefs.Inode) {}
